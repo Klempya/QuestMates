@@ -1,0 +1,10 @@
+## Interface: 16001
+## Title: QuestMates
+## Notes: Lists your quests and finds nearby players running QuestMates who have the same quest, so you can invite them to a group. Type /qg to open the window.
+## Author: klemp
+## Version: 1.0.0
+## IconTexture: Interface\AddOns\QuestMates\icon.tga
+## SavedVariables: QuestMatesDB
+
+QuestMates.lua
+QuestMates_UI.lua

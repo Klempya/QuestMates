@@ -1,0 +1,10 @@
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# WoW client leftovers if the repo is ever cloned into the game folder
+WTF/
+Logs/
+Screenshots/
