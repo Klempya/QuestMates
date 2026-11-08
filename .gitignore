@@ -8,3 +8,6 @@ Thumbs.db
 WTF/
 Logs/
 Screenshots/
+
+# release assets (built locally, attached to GitHub releases)
+dist/
