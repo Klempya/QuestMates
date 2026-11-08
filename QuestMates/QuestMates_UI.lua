@@ -141,8 +141,8 @@ function QuestMates_BuildUI()
   f:SetScript("OnDragStart", function() f:StartMoving() end)
   f:SetScript("OnDragStop", function()
     f:StopMovingOrSizing()
-    QM_UI_SavePos()
     QM_UI_Clamp()
+    QM_UI_SavePos()
   end)
   addborder(f)
   UI.frame = f
@@ -156,8 +156,8 @@ function QuestMates_BuildUI()
     child:SetScript("OnDragStart", function() f:StartMoving() end)
     child:SetScript("OnDragStop", function()
       f:StopMovingOrSizing()
-      QM_UI_SavePos()
       QM_UI_Clamp()
+      QM_UI_SavePos()
     end)
   end
   UI.forwardDrag = forwardDrag
@@ -262,12 +262,8 @@ function QuestMates_BuildUI()
     status:SetWidth(86)
     local inv = makebutton(row, 52, 16, L.invite, function()
       if row._resp then
-        -- if the responder is visible nearby, pass their unit token (taint-safe invite path)
-        local token
-        local near = QM_NearbyPlayers()
-        for i = 1, qn(near) do
-          if near[i].name == row._resp.name then token = near[i].token; break end
-        end
+        -- resolve the responder's full name from their nameplate when nearby
+        local token = QM_FindNearbyToken(row._resp.name)
         QM_Invite(row._resp.name, false, token)
       end
     end)
@@ -323,7 +319,10 @@ function QuestMates_BuildUI()
     end
   end)
 
-  f:Show()
+  -- stay closed at login: the user opens the window manually with /qg or the
+  -- minimap button (hidden frames are fine here — QM_Tick runs on the core
+  -- event frame, not on this window)
+  f:Hide()
   QM_UI_RefreshAll()
   QM_UI_BuildMinimapButton()
   QM_UI_BuildRadar()
@@ -335,13 +334,14 @@ function QM_UI_BuildMinimapButton()
   QM_InitDB()
 
   local b = CreateFrame("Button", "QuestMatesMinimapButton", Minimap)
-  b:SetWidth(28)
-  b:SetHeight(28)
-  -- background is invisible by default (the round icon.tga is the button);
-  -- it only appears on hover as a highlight. (A permanent opaque bg would
-  -- show as a square around the round icon.)
-  local mbg = newbg(b, 0.05, 0.05, 0.09, 0.0)
-  local fs = newfs(b, 16)
+  local size = 36  -- px (icon.tga is 64×64, scales cleanly)
+  b:SetWidth(size)
+  b:SetHeight(size)
+  -- no background texture at all: the round icon.tga *is* the button. Any
+  -- square bg (even a hover-only one) shows as a square around the round
+  -- icon; hover feedback is the round glow created below instead.
+  -- fallback "Q" (shown only if icon.tga fails to load), scaled with the button
+  local fs = newfs(b, math.floor(size * 16 / 28))
   fs:SetPoint("CENTER", b, "CENTER", 0, 0)
   fs:SetText("Q")
   fs:SetTextColor(1, 0.82, 0)
@@ -352,6 +352,14 @@ function QM_UI_BuildMinimapButton()
   local icon = b:CreateTexture(nil, "OVERLAY")
   allpoints(icon, b)
   pcall(icon.SetTexture, icon, "Interface\\AddOns\\QuestMates\\icon.tga")
+  -- hover highlight: an ADD-blended copy of the round icon → a round glow,
+  -- never a square. Invisible until mouseover; absent entirely if icon.tga
+  -- is missing/unreadable (the tooltip still gives hover feedback).
+  local glow = b:CreateTexture(nil, "OVERLAY")
+  allpoints(glow, b)
+  pcall(glow.SetTexture, glow, "Interface\\AddOns\\QuestMates\\icon.tga")
+  pcall(glow.SetBlendMode, glow, "ADD")
+  glow:SetVertexColor(1, 0.82, 0, 0.0)
   -- z-order: the minimap's own widgets (zoom buttons, ...) sit at high frame
   -- levels, so +1 is not enough — render above all of them or the button ends
   -- up behind the minimap
@@ -381,7 +389,7 @@ function QM_UI_BuildMinimapButton()
   b:RegisterForClicks("LeftButtonUp")
   b:SetScript("OnClick", function() QM_UI_Toggle() end)
   b:SetScript("OnEnter", function()
-    mbg:SetVertexColor(0.05, 0.05, 0.09, 0.6)  -- hover highlight
+    glow:SetVertexColor(1, 0.82, 0, 0.35)  -- round hover glow
     if GameTooltip then
       pcall(GameTooltip.SetOwner, GameTooltip, b, "ANCHOR_LEFT")
       pcall(GameTooltip.AddLine, GameTooltip, L.title .. " - " .. L.tipMinimap)
@@ -389,7 +397,7 @@ function QM_UI_BuildMinimapButton()
     end
   end)
   b:SetScript("OnLeave", function()
-    mbg:SetVertexColor(0.05, 0.05, 0.09, 0.0)
+    glow:SetVertexColor(1, 0.82, 0, 0.0)
     if GameTooltip then pcall(GameTooltip.Hide, GameTooltip) end
   end)
 
@@ -434,10 +442,13 @@ function QM_UI_Clamp()
   local w, h = f:GetWidth(), f:GetHeight()
   local sw, sh = UIParent:GetWidth(), UIParent:GetHeight()
   if not x or not y or not sw or not sh then return end
+  -- The frame is anchored by its TOP-LEFT corner (see BuildUI), so x is the
+  -- left edge and y is the TOP edge above UIParent's bottom. Keep the whole
+  -- frame on screen: top <= screen height, bottom >= 0.
   if x < 0 then x = 0 end
-  if y < 0 then y = 0 end
   if w and x + w > sw then x = sw - w end
-  if h and y + h > sh then y = sh - h end
+  if y > sh then y = sh end
+  if h and y - h < 0 then y = h end
   if f.ClearAllPoints then f:ClearAllPoints() end
   f:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", x, y)
 end

@@ -21,16 +21,19 @@ around you.
 - **Radar window**: green dots for nearby players, direction from map coords,
   distance rings, live count in the title
 - **Minimap button** (custom `icon.tga`): click to show/hide the window, drag
-  around the rim
+  around the rim. The window starts closed at login — open it with `/qg` or the
+  minimap button
 - Options: auto-announce on zone change, auto-accept invites from responders
   (clicks Blizzard's popup button — taint-safe), auto nearby-invite after each
   LFM, invite counter, radar on/off — all saved in `SavedVariables`
 - Anti-spam: min delay between broadcasts, responder expiry, per-sender rate
   limits; protocol traffic is hidden from chat windows
 - FR/EN localization (`frFR` client supported)
-- Taint-safe invite chain (nameplate unit token → `/invite` slash → target),
-  auto-detects taint-blocked methods, plus a `chat` fallback that prefills
-  `/invite <name>` for you to confirm with Enter
+- Name-based invite chain (`C_PartyInfo.InviteUnit("First Surname")`, with the
+  full name resolved from the nameplate token), auto-detects taint-blocked
+  methods, plus a `chat` fallback that prefills `/invite <name>` for you to
+  confirm with Enter. `SendChatMessage("/invite ...")` is not a working path:
+  it sends literal chat text, not a slash command.
 
 ## Install
 
@@ -50,7 +53,7 @@ testing. In-game: `/qg` opens the window.
 
 ## Testing
 
-- **Headless** (no game needed): `sh tests/run.sh` — 93 checks with a stubbed
+- **Headless** (no game needed): `sh tests/run.sh` — 95 checks with a stubbed
   WoW API (needs `lua5.1` / `luajit` / `lua`).
 - **In-game, no second account**: `/qg selftest` prints PASS/FAIL lines;
   inject fake protocol messages with

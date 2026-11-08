@@ -85,7 +85,7 @@ if locale == "frFR" then
     haveQuest   = "%s a aussi la quête « %s » !",
     invited     = "Invitation envoyée à %s.",
     accepted    = "Invitation de groupe de %s acceptée.",
-    noInviteApi = "InviteByName indisponible sur ce client.",
+    noInviteApi = "Aucune API d'invitation disponible sur ce client.",
     responders  = "Réponses (%d) :",
     questsHdr   = "Vos quêtes (%d) :",
     invite      = "Inviter",
@@ -112,10 +112,11 @@ if locale == "frFR" then
     tipNearby   = "Inviter les joueurs visibles autour de vous (nameplates/cible), même sans l'addon",
     taintHint   = "Action bloquée par le client (taint) - les invitations auto peuvent échouer : essayez /qg invitehow api",
     taintBlocked = "Méthode d'invitation bloquée par le client (taint) : %s — elle sera ignorée désormais.",
+    chatReady   = "Invitation préparée dans le chat : /invite %s (touche Entrée pour envoyer)",
     joinedGroup = "%s a rejoint le groupe !",
     complete    = "(terminée)",
     probeHdr    = "--- Sonde QuestMates ---",
-    usage       = "/qg : fenêtre | /qg lfm : annoncer | /qg probe : sonde API | /qg selftest : test auto | /qg scan : diagnostic proches | /qg nearby on|off | /qg invitehow auto|slash|api | /qg invitetest <nom> | /qg invitetry <nom> token|slash|target | /qg debug | /qg delay <s> | /qg expire <s> | /qg quests | /qg eventtest",
+    usage       = "/qg : fenêtre | /qg lfm : annoncer | /qg probe : sonde API | /qg selftest : test auto | /qg scan : diagnostic proches | /qg nearby on|off | /qg invitehow auto|slash|api|chat | /qg invitetest <nom> | /qg invitetry <nom> token|target|chat | /qg debug | /qg delay <s> | /qg expire <s> | /qg quests | /qg eventtest",
     loaded      = "QuestMates %s chargé - /qg pour afficher/masquer la fenêtre.",
   }
 else
@@ -131,7 +132,7 @@ else
     haveQuest   = "%s also has the quest \"%s\"!",
     invited     = "Invitation sent to %s.",
     accepted    = "Accepted group invite from %s.",
-    noInviteApi = "InviteByName not available on this client.",
+    noInviteApi = "No invite API available on this client.",
     responders  = "Responders (%d):",
     questsHdr   = "Your quests (%d):",
     invite      = "Invite",
@@ -158,10 +159,11 @@ else
     tipNearby   = "Invite players visible around you (nameplates/target), even without the addon",
     taintHint   = "Action blocked by the client (taint) - auto invites may fail: try /qg invitehow api",
     taintBlocked = "Invite method blocked by the client (taint): %s - it will be skipped from now on.",
+    chatReady   = "Invite prepared in chat: /invite %s (press Enter to send)",
     joinedGroup = "%s joined the group!",
     complete    = "(done)",
     probeHdr    = "--- QuestMates probe ---",
-    usage       = "/qg : toggle window | /qg lfm : broadcast | /qg probe : API probe | /qg selftest : self-test | /qg scan : nearby diagnostic | /qg nearby on|off | /qg invitehow auto|slash|api | /qg invitetest <name> | /qg invitetry <name> token|slash|target | /qg debug | /qg delay <s> | /qg expire <s> | /qg quests | /qg eventtest",
+    usage       = "/qg : toggle window | /qg lfm : broadcast | /qg probe : API probe | /qg selftest : self-test | /qg scan : nearby diagnostic | /qg nearby on|off | /qg invitehow auto|slash|api|chat | /qg invitetest <name> | /qg invitetry <name> token|target|chat | /qg debug | /qg delay <s> | /qg expire <s> | /qg quests | /qg eventtest",
     loaded      = "QuestMates %s loaded - /qg to show/hide the window.",
   }
 end
@@ -513,102 +515,153 @@ function QM_IsResponder(name)
   return false
 end
 
+-- Number of OTHER group members (0 = solo). GetNumGroupMembers counts the
+-- player too, so subtract one; GetNumSubgroupMembers/GetNumPartyMembers do
+-- not. GetNumPartyMembers does not exist on this client.
+function QM_GroupMemberCount()
+  if GetNumGroupMembers then
+    local ok, n = pcall(GetNumGroupMembers)
+    n = ok and tonumber(n) or nil
+    if n then return (n > 0) and (n - 1) or 0 end
+  end
+  if GetNumSubgroupMembers then
+    local ok, n = pcall(GetNumSubgroupMembers)
+    n = ok and tonumber(n) or nil
+    if n then return n end
+  end
+  if GetNumPartyMembers then
+    local ok, n = pcall(GetNumPartyMembers)
+    n = ok and tonumber(n) or nil
+    if n then return n end
+  end
+  return 0
+end
+
+-- Full character name of a unit. This client keeps first name and surname
+-- apart: UnitName() returns only the first name, while invites must use the
+-- name as displayed ("First Surname"). UnitFullName() returns both.
+function QM_UnitFullName(token)
+  if type(token) ~= "string" or token == "" then return nil end
+  local plain
+  if UnitName then
+    local ok, n = pcall(UnitName, token)
+    if ok then plain = n end
+  end
+  local first, last
+  if UnitFullName then
+    local ok, f, l = pcall(UnitFullName, token)
+    if ok then first, last = f, l end
+  end
+  -- some clients return the realm as second value; not part of the name
+  if last and GetRealmName then
+    local okR, realm = pcall(GetRealmName)
+    if okR and realm and last == realm then last = nil end
+  end
+  if (not first or first == "") then first = plain end
+  if not first or first == "" then return nil end
+  -- UnitName may already be the full display name: never double the surname
+  if plain and strfind(plain, " ", 1, true) then return plain end
+  if last and last ~= "" and last ~= first then return first .. " " .. last end
+  return first
+end
+
+-- add both the short and the full name to a set so comparisons work whatever
+-- form the client returns elsewhere
+local function qm_add_name(set, token)
+  if not UnitName then return end
+  local plain = UnitName(token)
+  if plain and plain ~= "" then set[plain] = true end
+  local full = QM_UnitFullName(token)
+  if full and full ~= "" then set[full] = true end
+end
+
 -- set of party member names (incl. self) for the "in group" status
 function QM_PartySet()
   local set = {}
-  if UnitName then
-    local me = UnitName("player")
-    if me then set[me] = true end
-  end
-  if GetNumPartyMembers and GetPartyMember then
-    local ok, n = pcall(GetNumPartyMembers)
-    if ok and n then
-      for i = 1, n do
-        local ok2, nm = pcall(GetPartyMember, i)
-        if ok2 and type(nm) == "string" then set[nm] = true end
-      end
-    end
-  elseif GetNumGroupMembers and UnitName then
-    local ok, n = pcall(GetNumGroupMembers)
-    if ok and n then
-      for i = 1, n do
-        local nm = UnitName("party" .. i)
-        if nm then set[nm] = true end
-      end
+  qm_add_name(set, "player")
+  local n = QM_GroupMemberCount()
+  for i = 1, n do
+    qm_add_name(set, "party" .. i)
+    -- legacy client fallback: GetPartyMember(i) returns a plain name
+    if GetPartyMember then
+      local ok, nm = pcall(GetPartyMember, i)
+      if ok and type(nm) == "string" then set[nm] = true end
     end
   end
   return set
 end
 
 function QM_Invite(name, isNearby, token, forceMethod)
+  -- Resolve the full displayed name (First Surname) from the unit token.
+  -- On this client C_PartyInfo.InviteUnit() takes a NAME, never a unit token:
+  -- passing "nameplate1" succeeds silently and invites nobody.
+  if token then
+    local full = QM_UnitFullName(token)
+    if full and full ~= "" then name = full end
+  end
   if not name or name == "" then return end
   QM_InitDB()
-  -- counters (session): total invites + nearby/"random" invites
-  QM.stats.invites = QM.stats.invites + 1
-  if isNearby then QM.stats.nearbyInvites = QM.stats.nearbyInvites + 1 end
-  if QM_UI_RefreshCount then pcall(QM_UI_RefreshCount) end
 
-  -- Taint-safe order. On strict clients, SendChatMessage("/invite ..") and
-  -- TargetUnit()+InviteUnit("target") can be taint-blocked (pcall cannot see
-  -- that), so the unit-token API (nameplate token — no retargeting) comes
-  -- first; the slash command is only a late fallback.
-  -- prefs.inviteMethod: "auto" (default) | "api" | "slash"
+  -- prefs.inviteMethod: "auto" (default) | "api" | "chat" (or legacy "slash")
   local method = forceMethod or QM.db.prefs.inviteMethod or "auto"
   local inviteUnit = InviteUnit or (C_PartyInfo and C_PartyInfo.InviteUnit)
   local fnByName = InviteByName or (C_PartyInfo and C_PartyInfo.InviteByName)
   QM_Debug("invite " .. name .. ": method=" .. method .. " token=" .. tostring(token)
     .. " fnByName=" .. tostring(fnByName ~= nil) .. " inviteUnit=" .. tostring(inviteUnit ~= nil))
+
   local function done(key)
     QM.pendingInvite = { m = key, t = time() }  -- a taint error right after this marks the method as blocked
-    QM_Debug("invite " .. name .. " attempted via: " .. key)
+    if key == "chat" then
+      -- nothing was sent yet: the user still has to press Enter
+      QM_Debug("invite " .. name .. " prepared in the chat box")
+      QM_Print(string.format(L.chatReady, name))
+      return
+    end
+    -- only count invites that were really handed to an invite API
+    QM.stats.invites = QM.stats.invites + 1
+    if isNearby then QM.stats.nearbyInvites = QM.stats.nearbyInvites + 1 end
+    if QM_UI_RefreshCount then pcall(QM_UI_RefreshCount) end
+    QM_Debug("invite " .. name .. " sent via: " .. key)
     QM_Print(string.format(L.invited, name))
   end
 
   -- method order; blocked methods are skipped
   local order
-  if method == "slash" or method == "token" or method == "target" or method == "byname" or method == "chat" then
+  if method == "slash" or method == "chat" then
+    order = { "chat" }  -- SendChatMessage("/invite") does NOT run a slash command
+  elseif method == "token" or method == "target" or method == "byname" then
     order = { method }  -- forced single method (for /qg invitetry)
   elseif method == "api" then order = { "byname", "token", "target" }
-  else order = { "byname", "token", "slash", "target" } end
+  else order = { "byname", "token", "target", "chat" } end
 
   for i = 1, qn(order) do
     local m = order[i]
     if not QM.blockedMethods[m] then
       if m == "byname" and fnByName then
-        if pcall(fnByName, name) then done("byname") return end
-      elseif m == "token" and inviteUnit and token then
-        if pcall(inviteUnit, token) then done("token") return end
-      elseif m == "slash" and SendChatMessage then
-        if pcall(SendChatMessage, "/invite " .. name, "SAY") then done("slash") return end
+        local ok, res = pcall(fnByName, name)
+        if ok and res ~= false then done("byname") return end
+      elseif m == "token" and inviteUnit then
+        -- by NAME (the token was only used to recover the full name above)
+        local ok, res = pcall(inviteUnit, name)
+        if ok and res ~= false then done("token") return end
       elseif m == "target" then
-        local targetByName = TargetByName or TargetUnit
-        if inviteUnit and targetByName and UnitName then
+        -- target-by-name is absent on this client; only try it if it exists
+        if inviteUnit and TargetByName then
           local oldGUID = (UnitGUID and UnitGUID("target")) or nil
-          pcall(targetByName, name)
-          if UnitName("target") == name then  -- verify the target really changed
-            pcall(inviteUnit, "target")
-            if oldGUID and TargetUnitByGUID then pcall(TargetUnitByGUID, oldGUID) end
-            done("target") return
-          end
-          QM_Debug("invite " .. name .. ": TargetUnit did not change the target")
+          pcall(TargetByName, name)
+          pcall(inviteUnit, name)
+          if oldGUID and TargetUnitByGUID then pcall(TargetUnitByGUID, oldGUID) end
+          done("target") return
         end
       elseif m == "chat" then
-        -- prefill the chat edit box with /invite <name> — the user presses Enter,
-        -- so the slash runs in the client's own secure context (always works)
+        -- prefill the chat edit box with /invite <name> — the user presses
+        -- Enter, so the slash command runs in the client's own context
         local open = ChatFrame_OpenChat or (ChatFrameUtil and ChatFrameUtil.OpenChat)
         if open then
-          pcall(open, "/invite " .. name)
-          done("chat")
-          return
+          if pcall(open, "/invite " .. name) then done("chat") return end
         end
       end
     end
-  end
-  -- everything failed or is blocked: last-ditch slash (unless a single method was forced)
-  if not forceMethod and SendChatMessage then
-    pcall(SendChatMessage, "/invite " .. name, "SAY")
-    done("slash")
-    return
   end
   QM_Print(L.noInviteApi)
 end
@@ -654,7 +707,7 @@ end
 
 function QM_NearbyPlayers()
   local out, seen = {}, {}
-  local me = (UnitName and UnitName("player")) or ""
+  local me = (UnitName and QM_UnitFullName("player")) or ""
   -- cross-faction invites are silently rejected by many servers: skip them
   local myFaction
   if UnitFactionGroup then
@@ -678,7 +731,7 @@ function QM_NearbyPlayers()
     for i = 1, 40 do
       local token = "nameplate" .. i
       if QM_IsPlayerToken(token) then
-        add(UnitName(token), token)
+        add(QM_UnitFullName(token), token)
       end
     end
   end
@@ -690,15 +743,32 @@ function QM_NearbyPlayers()
         local plate = plates[i]
         local token = plate and (plate.namePlateUnitToken or plate.unit or plate.UnitToken)
         if QM_IsPlayerToken(token) then
-          add(UnitName(token), token)
+          add(QM_UnitFullName(token), token)
         end
       end
     end
   end
   -- 3) fallback: current target / mouseover
-  if QM_IsPlayerToken("target") then add(UnitName("target"), "target") end
-  if QM_IsPlayerToken("mouseover") then add(UnitName("mouseover"), "mouseover") end
+  if QM_IsPlayerToken("target") then add(QM_UnitFullName("target"), "target") end
+  if QM_IsPlayerToken("mouseover") then add(QM_UnitFullName("mouseover"), "mouseover") end
   return out
+end
+
+-- unit token of a nearby player, matched by full name ("First Surname") or by
+-- the short name used in whispers/responders
+function QM_FindNearbyToken(name)
+  if not name or name == "" or not QM_NearbyPlayers then return nil end
+  local short = gsub(name, " .*$", "")
+  local packed = gsub(name, "%s+", "")
+  local near = QM_NearbyPlayers()
+  for i = 1, qn(near) do
+    local n = near[i].name
+    if n == name then return near[i].token end
+    if n and (gsub(n, " .*$", "") == name or n == short or gsub(n, "%s+", "") == packed) then
+      return near[i].token
+    end
+  end
+  return nil
 end
 
 -- queue invites to nearby players (called after each successful LFM broadcast,
@@ -706,10 +776,8 @@ end
 function QM_QueueNearbyInvites(force)
   QM_InitDB()
   if not force and not QM.db.prefs.inviteNearby then return end
-  -- no room in the party anyway
-  local pn = 0
-  if GetNumPartyMembers then pn = GetNumPartyMembers() or 0
-  elseif GetNumSubgroupMembers then pn = GetNumSubgroupMembers() or 0 end
+  -- no room in the party anyway (GetNumPartyMembers does not exist here)
+  local pn = QM_GroupMemberCount()
   if pn >= 4 then QM_Print(L.nearbyFull) return end
   local party = QM_PartySet()
   local maxN = tonumber(QM.db.prefs.nearbyMax) or 5
@@ -751,16 +819,20 @@ end
 -- returns true if the cvar was changed
 function QM_TryEnableFriendlyNameplates()
   if not SetCVar or not GetCVar then return false end
-  local changed = false
-  local CVARS = { "nameplateShowFriends", "nameplateShowAll", "nameplateShowFriendly" }
-  for i = 1, qn(CVARS) do
-    local ok, v = pcall(GetCVar, CVARS[i])
-    if ok and tostring(v) == "0" then
-      pcall(SetCVar, CVARS[i], 1)
-      changed = true
+  -- nameplateShowFriends does not exist on this client; the friendly-nameplate
+  -- toggle is nameplateShowFriendlyPlayers (nameplateShowAll also works)
+  local ok1, v1 = pcall(GetCVar, "nameplateShowFriendlyPlayers")
+  if ok1 and v1 ~= nil then
+    if tostring(v1) == "0" then
+      if pcall(SetCVar, "nameplateShowFriendlyPlayers", 1) then return true end
     end
+    return false
   end
-  return changed
+  local ok2, v2 = pcall(GetCVar, "nameplateShowAll")
+  if ok2 and v2 ~= nil and tostring(v2) == "0" then
+    if pcall(SetCVar, "nameplateShowAll", 1) then return true end
+  end
+  return false
 end
 
 -- ---------------------------------------------------------------------------
@@ -1061,7 +1133,7 @@ function QM_Slash(msg)
     if v == "auto" or v == "slash" or v == "api" or v == "chat" then
       QM.db.prefs.inviteMethod = v
       QM.blockedMethods = {}  -- re-enable all methods when switching
-      QM_Print("inviteMethod = " .. v .. "  (auto = token API, /invite slash, target; api = API only; slash = /invite only; chat = prefill chat box, you press Enter)")
+      QM_Print("inviteMethod = " .. v .. "  (auto = by name via C_PartyInfo.InviteUnit, then target, then chat prefill; api = API only; chat/slash = prefill chat box, you press Enter)")
     else
       QM_Print("inviteMethod = " .. tostring(QM.db.prefs.inviteMethod) .. " (auto|slash|api|chat)")
     end
@@ -1069,11 +1141,7 @@ function QM_Slash(msg)
     local name = a[2]
     if name and name ~= "" then
       -- attach a nameplate unit token if this player is visible nearby
-      local token
-      local near = QM_NearbyPlayers()
-      for i = 1, qn(near) do
-        if near[i].name == name then token = near[i].token; break end
-      end
+      local token = QM_FindNearbyToken(name)
       QM_Print("invitetest -> " .. name .. " (method=" .. tostring(QM.db.prefs.inviteMethod) .. " token=" .. tostring(token) .. ")")
       QM_Invite(name, false, token)
     else
@@ -1083,15 +1151,11 @@ function QM_Slash(msg)
     -- /qg invitetry <name> <token|slash|target|byname> : force a single invite method
     local name, m = a[2], strlower(a[3] or "")
     if name and name ~= "" and (m == "token" or m == "slash" or m == "target" or m == "byname" or m == "chat") then
-      local token
-      local near = QM_NearbyPlayers()
-      for i = 1, qn(near) do
-        if near[i].name == name then token = near[i].token; break end
-      end
+      local token = QM_FindNearbyToken(name)
       QM_Print("invitetry -> " .. name .. " method=" .. m .. " token=" .. tostring(token))
       QM_Invite(name, false, token, m)
     else
-      QM_Print("/qg invitetry <nom> <token|slash|target|byname|chat>")
+      QM_Print("/qg invitetry <nom> <token|slash|target|byname|chat>  (slash = chat prefill on this client)")
     end
   elseif cmd == "scan" then
     QM_ScanNearby()
@@ -1127,12 +1191,14 @@ function QM_ScanNearby()
   QM_InitDB()
   QM_Print("--- scan nearby ---")
   if GetCVar then
-    local CV = { "nameplateShowFriends", "nameplateShowAll", "nameplateShowFriendly", "nameplateMaxDistance" }
+    local CV = { "nameplateShowFriendlyPlayers", "nameplateShowAll", "nameplateMaxDistance" }
     for i = 1, qn(CV) do
       local ok, v = pcall(GetCVar, CV[i])
       QM_Print("cvar " .. CV[i] .. " = " .. tostring(ok and v or "?"))
     end
   end
+  QM_Print("UnitName = " .. tostring(UnitName) .. " | UnitFullName = " .. tostring(UnitFullName)
+    .. " | GetRealmName = " .. tostring(GetRealmName))
   QM_Print("UnitIsPlayer = " .. tostring(UnitIsPlayer) .. " | UnitPlayerControlled = " .. tostring(UnitPlayerControlled)
     .. " | UnitExists = " .. tostring(UnitExists) .. " | C_NamePlate.GetNamePlates = " .. tostring(C_NamePlate and C_NamePlate.GetNamePlates))
   if UnitExists then
@@ -1143,8 +1209,10 @@ function QM_ScanNearby()
       if okE and ex then
         cnt = cnt + 1
         local nm = UnitName and UnitName(token) or nil
+        local full = QM_UnitFullName(token)
         local okP, p = pcall(UnitIsPlayer or UnitPlayerControlled or function() return nil end, token)
-        QM_Print("  " .. token .. ": name=" .. tostring(nm) .. " isPlayer=" .. (okP and tostring(p) or "ERROR"))
+        QM_Print("  " .. token .. ": name=" .. tostring(nm) .. " full=" .. tostring(full)
+          .. " isPlayer=" .. (okP and tostring(p) or "ERROR"))
       end
     end
     QM_Print("existing nameplate tokens: " .. cnt .. " / 40")
@@ -1168,9 +1236,7 @@ function QM_ScanNearby()
   for i = 1, qn(players) do
     QM_Print("  " .. tostring(players[i].name) .. " (token=" .. tostring(players[i].token) .. ")")
   end
-  local pn = 0
-  if GetNumPartyMembers then pn = GetNumPartyMembers() or 0
-  elseif GetNumSubgroupMembers then pn = GetNumSubgroupMembers() or 0 end
+  local pn = QM_GroupMemberCount()
   QM_Print("party members = " .. pn
     .. " | inviteNearby = " .. tostring(QM.db.prefs.inviteNearby)
     .. " | inviteMethod = " .. tostring(QM.db.prefs.inviteMethod))
@@ -1342,8 +1408,11 @@ function QM_Probe()
   QM_Print("C_NamePlate = " .. tostring(C_NamePlate) .. " | GetNamePlates = " .. tostring(C_NamePlate and C_NamePlate.GetNamePlates)
     .. " | CheckInteractDistance = " .. tostring(CheckInteractDistance))
   QM_Print("UnitIsPlayer = " .. tostring(UnitIsPlayer) .. " | UnitPlayerControlled = " .. tostring(UnitPlayerControlled) .. " | UnitExists = " .. tostring(UnitExists))
+  QM_Print("UnitName = " .. tostring(UnitName) .. " | UnitFullName = " .. tostring(UnitFullName)
+    .. " | GetRealmName = " .. tostring(GetRealmName) .. " | GetNumGroupMembers = " .. tostring(GetNumGroupMembers)
+    .. " | GetNumSubgroupMembers = " .. tostring(GetNumSubgroupMembers))
   if GetCVar then
-    local CVARS = { "nameplateShowFriends", "nameplateShowAll", "nameplateShowEnemies", "nameplateMaxDistance" }
+    local CVARS = { "nameplateShowFriendlyPlayers", "nameplateShowAll", "nameplateShowEnemies", "nameplateMaxDistance" }
     for i = 1, qn(CVARS) do
       local okc, cv = pcall(GetCVar, CVARS[i])
       QM_Print("cvar " .. CVARS[i] .. " = " .. tostring(okc and cv or "n/a"))

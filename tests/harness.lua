@@ -87,11 +87,24 @@ platesVisible = true
 UnitName = function(u)
   if u == "player" then return "Tester" end
   if u == "target" then return currentTarget end
+  if u == "party1" then return "NearGuy" end
   if u == "nameplate1" or u == "plate1" then return "NearGuy" end
   if u == "nameplate2" or u == "plate2" then return "NearGal" end
   if u == "nameplate3" then return "HordeGuy" end
   return nil
 end
+-- this client keeps first name and surname apart: UnitName() is the first
+-- name, the displayed/invitable name is "First Surname"
+UnitFullName = function(u)
+  if u == "player" then return "Tester", nil end
+  if u == "target" then return currentTarget, nil end
+  if u == "party1" then return "Near", "Guy" end
+  if u == "nameplate1" or u == "plate1" then return "Near", "Guy" end
+  if u == "nameplate2" or u == "plate2" then return "Near", "Gal" end
+  if u == "nameplate3" then return "Horde", "Guy" end
+  return nil
+end
+GetRealmName = function() return "TestRealm" end
 UnitIsPlayer = function(u) return 1 end
 UnitPlayerControlled = function(u) return 1 end
 C_Map = {
@@ -136,8 +149,8 @@ function ChatFrame_AddMessageEventFilter(ev, fn) filters[ev] = fn end
 function RegisterAddonMessagePrefix(p) prefixes[p] = true end
 function SendAddonMessage(prefix, msg, dist, target) sent[#sent+1] = { prefix = prefix, msg = msg, dist = dist, target = target } end
 function SendChatMessage(msg, typ, lang, target) chatsent[#chatsent+1] = { msg = msg, typ = typ, target = target } end
--- modern-style client: no InviteByName global, invite via C_PartyInfo.InviteUnit after targeting
-C_PartyInfo = { InviteUnit = function(u) invitedUnit = u end }
+-- modern-style client: no InviteByName global, C_PartyInfo.InviteUnit takes a NAME
+C_PartyInfo = { InviteUnit = function(u) invitedUnit = u; return true end }
 TargetUnit = function(name) targeted = name; currentTarget = name; return true end
 UnitGUID = function(u) return nil end
 function AcceptGroup() accepted = true end
@@ -167,7 +180,7 @@ check(ok, "QuestMates_BuildUI runs without error" .. (ok and "" or (": " .. tost
 
 -- 1. ADDON_LOADED (modern varargs dispatch)
 fire("ADDON_LOADED", "QuestMates")
-check(QM.UI and QM.UI.frame and QM.UI.frame._vis, "window created and visible")
+check(QM.UI and QM.UI.frame and not QM.UI.frame._vis, "window created but stays closed at login")
 check(prefixes["QG"], "addon prefix QG registered")
 check(#QM.quests == 3, "quest log snapshot has 3 entries")
 check(QM.quests[3].complete == true, "completed quest detected via 6th return value")
@@ -220,53 +233,60 @@ local t0 = QM.responders[1].time
 fire("CHAT_MSG_WHISPER", "QG_HAVE^Elwynn Forest^12^The Fargodeep Mine^^50.0^40.0", "Buddy")
 check(#QM.responders == 1 and QM.responders[1].time == t0, "per-sender rate limit blocks repeated HAVE")
 
--- 6. invite methods (taint-safe ordering)
+-- 6. invite methods (name-based API; Forever has no InviteByName)
 QM.db.prefs.inviteMethod = "auto"
+invitedUnit = nil
 QM_Invite("Buddy")
-check(chatsent[#chatsent] and chatsent[#chatsent].msg == "/invite Buddy", "auto method: /invite slash first (no retargeting)")
+check(invitedUnit == "Buddy", "auto method: C_PartyInfo.InviteUnit(name)")
 QM.db.prefs.inviteMethod = "api"
+invitedUnit = nil
 QM_Invite("Buddy")
-check(targeted == "Buddy" and invitedUnit == "target", "api method: TargetUnit + InviteUnit(\"target\")")
+check(invitedUnit == "Buddy", "api method: invite by name")
+invitedUnit = nil
 QM_Invite("NearGuy", true, "plate1")
-check(invitedUnit == "plate1", "api method: invite by nameplate unit token, no retargeting")
-local savedPI, savedTU = C_PartyInfo.InviteUnit, TargetUnit
+check(invitedUnit == "Near Guy", "api method: nameplate token is resolved to the full name (First Surname)")
+local savedPI, savedTB = C_PartyInfo.InviteUnit, TargetByName
 C_PartyInfo.InviteUnit = nil
-TargetUnit = nil
-currentTarget = nil
+TargetByName = nil
+openedChat = nil
+QM.db.prefs.inviteMethod = "auto"
 QM_Invite("Pal")
-check(chatsent[#chatsent] and chatsent[#chatsent].msg == "/invite Pal", "fallback with no API: /invite slash command")
-C_PartyInfo.InviteUnit, TargetUnit = savedPI, savedTU
+check(openedChat == "/invite Pal", "no invite API: /invite is prefilled in the chat box (SendChatMessage cannot run slash commands)")
+C_PartyInfo.InviteUnit = savedPI
 QM.db.prefs.inviteMethod = "slash"
+openedChat = nil
 QM_Invite("Pal")
-check(chatsent[#chatsent] and chatsent[#chatsent].msg == "/invite Pal", "slash method always uses /invite")
--- auto WITH a token -> token API first (taint-safe), no slash
-local nchats = #chatsent
+check(openedChat == "/invite Pal", "slash method prefills the chat box")
+-- auto WITH a nameplate token -> invite by the resolved full name, never the token
+invitedUnit = nil
 QM.db.prefs.inviteMethod = "auto"
 QM_Invite("NearGuy", true, "nameplate1")
-check(invitedUnit == "nameplate1" and #chatsent == nchats, "auto method with token uses the unit-token API, not the slash")
--- taint right after a token invite -> method marked blocked -> next invite skips it
+check(invitedUnit == "Near Guy", "auto method with a token invites by full name, not by unit token")
+-- taint right after an invite -> method marked blocked -> next invite skips it
 QM.blockedMethods = {}
 QM.pendingInvite = nil
 QM_Invite("NearGuy", true, "nameplate1")
 fire("CHAT_MSG_SYSTEM", "Interface action failed because of an addon")
-check(QM.blockedMethods.token == true, "taint after a token invite marks 'token' as blocked")
+check(QM.blockedMethods.token == true, "taint after a name invite marks 'token' as blocked")
+openedChat = nil
 QM_Invite("NearGuy", true, "nameplate1")
-check(chatsent[#chatsent] and chatsent[#chatsent].msg == "/invite NearGuy", "blocked method is skipped on the next invite (falls to slash)")
+check(openedChat == "/invite Near Guy", "blocked method is skipped on the next invite (falls to chat prefill)")
 -- forced single method via /qg invitetry
 QM.blockedMethods = {}
 invitedUnit = nil
 QM_Slash("invitetry NearGuy token")
-check(invitedUnit == "nameplate1", "/qg invitetry <name> token forces the token method only")
+check(invitedUnit == "Near Guy", "/qg invitetry <name> token forces the name-based API with the full name")
 local nc2 = #chatsent
+openedChat = nil
 QM_Slash("invitetry Pal slash")
-check(chatsent[#chatsent] and chatsent[#chatsent].msg == "/invite Pal" and #chatsent == nc2 + 1, "/qg invitetry <name> slash forces the slash method only")
+check(openedChat == "/invite Pal" and #chatsent == nc2, "/qg invitetry <name> slash prefills the chat box")
 QM_Slash("invitetry Pal chat")
 check(openedChat == "/invite Pal", "/qg invitetry <name> chat prefills the chat box with /invite")
 -- opposite-faction nameplate is excluded from the nearby list
 local nearNow = QM_NearbyPlayers()
 local hordeFound = false
 for i = 1, table.getn(nearNow) do
-  if nearNow[i].name == "HordeGuy" then hordeFound = true end
+  if nearNow[i].name == "Horde Guy" then hordeFound = true end
 end
 check(table.getn(nearNow) == 2 and not hordeFound, "opposite-faction players are excluded from nearby invites")
 -- joined-group confirmation on GROUP_ROSTER_UPDATE
@@ -288,7 +308,7 @@ QM.db.prefs.inviteNearby = false
 QM.nearbyQueue = {}
 QM_QueueNearbyInvites(true)
 check(table.getn(QM.nearbyQueue) == 2, "dedicated button (force=true) queues nearby players without the pref")
-check(QM.nearbyQueue[1].name == "NearGuy" and QM.nearbyQueue[1].token == "nameplate1", "queue entries carry name + unit token")
+check(QM.nearbyQueue[1].name == "Near Guy" and QM.nearbyQueue[1].token == "nameplate1", "queue entries carry full name + unit token")
 QM.nearbyQueue = {}
 QM_QueueNearbyInvites(false)
 check(table.getn(QM.nearbyQueue) == 0, "pref off + no force = no auto-queue")
@@ -361,8 +381,9 @@ QM_Slash("delay 30"); check(QM.db.prefs.minDelay == 30, "/qg delay sets preferen
 QM_Slash("expire 45"); check(QM.db.prefs.expire == 45, "/qg expire sets preference")
 QM_Slash("invitehow api"); check(QM.db.prefs.inviteMethod == "api", "/qg invitehow sets the invite method")
 QM_Slash("invitehow auto"); check(QM.db.prefs.inviteMethod == "auto", "/qg invitehow back to auto")
+QM_Slash(""); check(QM.UI.frame._vis == true, "/qg opens the window manually")
 QM_Slash(""); check(QM.UI.frame._vis == false, "/qg hides window")
-QM_Slash(""); check(QM.UI.frame._vis == true, "/qg shows window")
+QM_UI_Show(true)  -- visible again for the drag/radar tests below
 QM_Slash("probe")
 QM_Slash("quests")
 
@@ -383,19 +404,19 @@ QM.db.prefs.inviteMethod = "api"
 QM.stats.nearbyInvites = 0
 QM.lastBroadcast = 0
 QM_BroadcastLFM()  -- real (stubbed) send + queue nearby invites
-check(table.getn(QM.nearbyQueue) == 2 and QM.nearbyQueue[1].name == "NearGuy" and QM.nearbyQueue[2].name == "NearGal",
+check(table.getn(QM.nearbyQueue) == 2 and QM.nearbyQueue[1].name == "Near Guy" and QM.nearbyQueue[2].name == "Near Gal",
   "broadcast with inviteNearby queues nearby nameplate players")
 targeted, invitedUnit = nil, nil
 QM.lastNearbyInvite = 0
 evf.scripts.OnUpdate(evf, 0.6)  -- one tick -> one invite (staggered)
-check(invitedUnit == "nameplate1" and table.getn(QM.nearbyQueue) == 1,
-  "tick sends the first nearby invite (by unit token)")
+check(invitedUnit == "Near Guy" and table.getn(QM.nearbyQueue) == 1,
+  "tick sends the first nearby invite (by full name)")
 QM.lastNearbyInvite = time() - 10
 evf.scripts.OnUpdate(evf, 0.6)
-check(invitedUnit == "nameplate2" and table.getn(QM.nearbyQueue) == 0, "next tick sends the next nearby invite after the delay")
+check(invitedUnit == "Near Gal" and table.getn(QM.nearbyQueue) == 0, "next tick sends the next nearby invite after the delay")
 QM.lastNearbyInvite = time()  -- just invited -> next tick must NOT invite again (staggering)
 evf.scripts.OnUpdate(evf, 0.6)
-check(invitedUnit == "nameplate2", "nearby invites are staggered by nearbyDelay")
+check(invitedUnit == "Near Gal", "nearby invites are staggered by nearbyDelay")
 -- invite counter
 check(QM.stats.nearbyInvites == 2, "nearby invite counter counts sent invites (2)")
 QM_UI_RefreshCount()
@@ -415,22 +436,22 @@ QM.db.prefs.inviteMethod = "auto"
 
 -- 13c. friendly nameplates off -> button auto-enables the cvar, rescans next tick
 local cvarSet
-local cvars = { nameplateShowFriends = "0", nameplateMaxDistance = "45" }
+local cvars = { nameplateShowFriendlyPlayers = "0", nameplateMaxDistance = "45" }
 GetCVar = function(n) return cvars[n] end
 SetCVar = function(n, v) cvars[n] = tostring(v); cvarSet = n end
 platesVisible = false  -- simulate friendly nameplates off (no nameplate tokens, no plate frames)
 QM.nearbyQueue = {}
 QM.pendingNearby = nil
 QM_QueueNearbyInvites(true)
-check(cvarSet == "nameplateShowFriends" and cvars.nameplateShowFriends == "1",
-  "button auto-enables nameplateShowFriends when no player plates visible")
+check(cvarSet == "nameplateShowFriendlyPlayers" and cvars.nameplateShowFriendlyPlayers == "1",
+  "button auto-enables nameplateShowFriendlyPlayers when no player plates visible")
 check(QM.pendingNearby ~= nil, "a rescan is scheduled for the next tick")
 QM.pendingNearby = time() - 1  -- simulate 1+ s having passed (in-game this is real time)
 currentTarget = nil  -- no target fallback, only nameplates
 platesVisible = true  -- plates appear after enabling
 QM.nearbyInvited = {}
 evf.scripts.OnUpdate(evf, 0.6)
-check(table.getn(QM.nearbyQueue) == 2 and QM.nearbyQueue[1].name == "NearGuy",
+check(table.getn(QM.nearbyQueue) == 2 and QM.nearbyQueue[1].name == "Near Guy",
   "rescan after enabling nameplates queues the players")
 QM.nearbyQueue = {}
 QM.pendingNearby = nil
@@ -452,6 +473,16 @@ check(countFails() == f0, "/qg selftest reports no failures")
 -- 15. position save
 QM_UI_SavePos()
 check(QM.db.pos.x == 100 and QM.db.pos.y == 500, "window position saved to SavedVariables")
+
+-- 15a. clamp uses the TOP edge (regression: the window could not be moved up)
+local fr = QM.UI.frame
+fr._w, fr._h = 300, 458
+fr._x, fr._y = 10, 900  -- top edge above the 768 px screen
+QM_UI_Clamp()
+check(fr._pt[4] == 10 and fr._pt[5] == 768, "clamp allows the window top to reach the screen top")
+fr._x, fr._y = -20, 100  -- bottom edge below the screen
+QM_UI_Clamp()
+check(fr._pt[4] == 0 and fr._pt[5] == 458, "clamp keeps the bottom-left corner on screen")
 
 -- 14c. taint system message -> hint printed
 local nmsgs = table.getn(DEFAULT_CHAT_FRAME.msgs)
