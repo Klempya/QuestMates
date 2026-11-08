@@ -15,12 +15,14 @@ who is near you, and a minimap button opens/closes the window.
 ## Using it
 
 - Type **`/qg`** (or click the **compass icon on the minimap**) to open the window.
-- **Click a quest** in the list to select it, then click **Chercher des partenaires**
-  to announce it: players in your zone who run QuestMates and have the same
-  quest answer automatically and appear in the **Réponses** panel — click
-  **Inviter** next to a name to invite them.
-- **Inviter les proches** invites the players physically around you, even if
-  they don't have the addon (max 5 per click, a few seconds apart).
+- **Click a quest** in the list to select it, then click **Find mates**
+  (« Chercher des partenaires » on a French client) to announce it: players in
+  your zone who run QuestMates and have the same quest answer automatically and
+  appear in the **Responders** panel (« Réponses ») — click **Invite** (« Inviter »)
+  next to a name to invite them.
+- **Invite nearby** (« Inviter les proches ») invites the players physically
+  around you, even if they don't have the addon (max 5 per click, a few seconds
+  apart).
 - The **radar** window shows nearby players as green dots (within ~45 yd).
 - Bottom checkboxes: auto-announce when changing zone · auto-accept invites from
   responders · auto-invite nearby players after each announcement · show the
